@@ -6,7 +6,7 @@ import numpy as np
 from utils.data import load_time_series_dataloaders
 from utils.train import train_model, evaluate, regression_metrics, retrain_on_train_val
 
-from models.mlp import ImprovedMLP
+from models.mlp import ImprovedMLP, ResidualMLP
 from models.lstm import ImprovedLSTM
 from models.transformer import TimeSeriesTransformer
 
@@ -15,7 +15,7 @@ CSV_PATH = "dc_extended.csv"
 WINDOW_SIZE = 90
 BATCH_SIZE = 64
 EPOCHS = 200
-PATIENCE = 30
+PATIENCE = 35
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 print(f"Using device: {DEVICE}")
@@ -45,15 +45,15 @@ print(f"Train: {len(train_loader.dataset)}, Val: {len(val_loader.dataset)}, Test
 
 
 model_configs = {
-    "MLP": {
-        "class": ImprovedMLP,
+    "ResidualMLP": {
+        "class": ResidualMLP,
         "kwargs": {
             "seq_len": seq_len,
             "num_features": num_features,
-            "dropout": 0.3
+            "dropout": 0.25
         },
-        "lr": 1e-3,
-        "weight_decay": 1e-5,
+        "lr": 8e-4,
+        "weight_decay": 5e-6,
     },
 
     "LSTM": {
@@ -62,10 +62,10 @@ model_configs = {
             "num_features": num_features,
             "hidden_size": 128,
             "num_layers": 3,
-            "dropout": 0.3
+            "dropout": 0.25
         },
-        "lr": 1e-3,
-        "weight_decay": 1e-5,
+        "lr": 8e-4,
+        "weight_decay": 5e-6,
     },
 
     "Transformer": {
@@ -76,15 +76,16 @@ model_configs = {
             "nhead": 4,
             "num_layers": 2,
             "dim_feedforward": 256,
-            "dropout": 0.3,
+            "dropout": 0.25,
         },
-        "lr": 1e-3,
-        "weight_decay": 1e-5,
+        "lr": 8e-4,
+        "weight_decay": 5e-6,
     },
 }
 
 
 all_results = []
+all_test_predictions = {}
 
 for model_name, config in model_configs.items():
     print("\n" + "="*70)
@@ -111,9 +112,9 @@ for model_name, config in model_configs.items():
 
     print(f"Best epoch found: {best_epoch}")
 
-    retrain_epochs = int(best_epoch * 1.5)
-    retrain_epochs = max(retrain_epochs, 30)
-    retrain_epochs = min(retrain_epochs, 100)
+    retrain_epochs = int(best_epoch * 1.2)
+    retrain_epochs = max(retrain_epochs, 25)
+    retrain_epochs = min(retrain_epochs, 80)
 
     print(f"\n[Phase 2] Retraining on combined train+val for {retrain_epochs} epochs...")
 
@@ -138,6 +139,8 @@ for model_name, config in model_configs.items():
 
     pred = target_scaler.inverse_transform(pred_scaled.reshape(-1, 1)).flatten()
     true = target_scaler.inverse_transform(true_scaled.reshape(-1, 1)).flatten()
+
+    all_test_predictions[model_name] = pred
 
     mse, rmse, mae, mape, r2 = regression_metrics(true, pred)
 
@@ -164,6 +167,33 @@ for model_name, config in model_configs.items():
         "val_losses": val_losses,
         "predictions": (true, pred),
     })
+
+
+print("\n" + "="*70)
+print("=== ENSEMBLE PREDICTIONS ===")
+print("="*70)
+
+ensemble_pred = np.mean([all_test_predictions[m] for m in all_test_predictions], axis=0)
+mse_ens, rmse_ens, mae_ens, mape_ens, r2_ens = regression_metrics(true, ensemble_pred)
+
+print(f"Ensemble (Simple Average):")
+print(f"  RMSE:  ${rmse_ens:>12,.2f}")
+print(f"  MAE:   ${mae_ens:>12,.2f}")
+print(f"  MAPE:  {mape_ens:>11.2f}%")
+print(f"  R²:    {r2_ens:>12.4f}")
+
+all_results.append({
+    "MODEL": "Ensemble",
+    "RMSE": rmse_ens,
+    "MAE": mae_ens,
+    "MAPE": mape_ens,
+    "R2": r2_ens,
+    "best_epoch": 0,
+    "retrain_epochs": 0,
+    "train_losses": [],
+    "val_losses": [],
+    "predictions": (true, ensemble_pred),
+})
 
 
 print("\n" + "="*70)
@@ -215,3 +245,10 @@ print(f"{best_model} predictions saved")
 print("\n" + "="*70)
 print("TRAINING COMPLETED SUCCESSFULLY")
 print("="*70)
+
+if best_rmse < 10000:
+    print("\n✓ Excellent performance! RMSE < $10,000")
+elif best_rmse < 12000:
+    print("\n✓ Good performance! RMSE < $12,000")
+else:
+    print("\n→ Consider additional hyperparameter tuning")
