@@ -8,6 +8,11 @@ import numpy as np
 import os
 
 
+def _to_1d(a):
+    a = np.asarray(a)
+    return a.reshape(-1)
+
+
 def plot_training_curves(train_losses, val_losses, model_name, save_path="plots"):
     """
     Plot and save training/validation loss curves
@@ -27,7 +32,7 @@ def plot_training_curves(train_losses, val_losses, model_name, save_path="plots"
     plt.grid(True, alpha=0.3)
 
     # Mark best epoch
-    best_epoch = np.argmin(val_losses) + 1
+    best_epoch = int(np.argmin(val_losses)) + 1
     best_val_loss = val_losses[best_epoch - 1]
     plt.plot(best_epoch, best_val_loss, 'g*', markersize=15,
              label=f'Best (Epoch {best_epoch})')
@@ -45,6 +50,9 @@ def plot_predictions(y_true, y_pred, model_name, save_path="plots"):
     Plot actual vs predicted values
     """
     os.makedirs(save_path, exist_ok=True)
+
+    y_true = _to_1d(y_true)
+    y_pred = _to_1d(y_pred)
 
     plt.figure(figsize=(14, 6))
 
@@ -64,8 +72,8 @@ def plot_predictions(y_true, y_pred, model_name, save_path="plots"):
     plt.scatter(y_true, y_pred, alpha=0.5, s=10)
 
     # Perfect prediction line
-    min_val = min(y_true.min(), y_pred.min())
-    max_val = max(y_true.max(), y_pred.max())
+    min_val = float(min(y_true.min(), y_pred.min()))
+    max_val = float(max(y_true.max(), y_pred.max()))
     plt.plot([min_val, max_val], [min_val, max_val], 'r--',
              label='Perfect Prediction', linewidth=2)
 
@@ -88,8 +96,14 @@ def plot_error_distribution(y_true, y_pred, model_name, save_path="plots"):
     """
     os.makedirs(save_path, exist_ok=True)
 
+    y_true = _to_1d(y_true)
+    y_pred = _to_1d(y_pred)
+
     errors = y_pred - y_true
-    percentage_errors = (errors / y_true) * 100
+
+    # y_true çok küçük/0 olursa yüzde hata bozulur -> güvenli hesap
+    denom = np.where(np.abs(y_true) < 1e-9, np.nan, y_true)
+    percentage_errors = (errors / denom) * 100
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
@@ -103,7 +117,8 @@ def plot_error_distribution(y_true, y_pred, model_name, save_path="plots"):
     axes[0].grid(True, alpha=0.3)
 
     # Percentage errors
-    axes[1].hist(percentage_errors, bins=50, edgecolor='black', alpha=0.7, color='orange')
+    pe = percentage_errors[~np.isnan(percentage_errors)]
+    axes[1].hist(pe, bins=50, edgecolor='black', alpha=0.7, color='orange')
     axes[1].axvline(x=0, color='r', linestyle='--', linewidth=2, label='Zero Error')
     axes[1].set_xlabel('Percentage Error (%)', fontsize=11)
     axes[1].set_ylabel('Frequency', fontsize=11)
@@ -116,6 +131,103 @@ def plot_error_distribution(y_true, y_pred, model_name, save_path="plots"):
     plt.close()
 
     print(f"✓ Saved: {save_path}/{model_name}_error_distribution.png")
+
+
+def plot_residuals_over_time(y_true, y_pred, model_name, save_path="plots"):
+    """
+    Residual time series plot: (y_true - y_pred)
+    """
+    os.makedirs(save_path, exist_ok=True)
+
+    y_true = _to_1d(y_true)
+    y_pred = _to_1d(y_pred)
+    res = y_true - y_pred
+
+    plt.figure(figsize=(14, 4))
+    plt.plot(np.arange(len(res)), res, linewidth=1.2)
+    plt.axhline(0, linestyle='--', linewidth=1.5)
+    plt.xlabel('Sample Index', fontsize=11)
+    plt.ylabel('Residual (USD)', fontsize=11)
+    plt.title(f'{model_name} - Residuals Over Time', fontsize=13)
+    plt.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(f"{save_path}/{model_name}_residuals_time.png", dpi=300)
+    plt.close()
+
+    print(f"✓ Saved: {save_path}/{model_name}_residuals_time.png")
+
+
+def plot_rolling_metrics(y_true, y_pred, model_name, window=30, save_path="plots"):
+    """
+    Rolling RMSE and MAE to detect regime shifts / instability
+    """
+    os.makedirs(save_path, exist_ok=True)
+
+    y_true = _to_1d(y_true)
+    y_pred = _to_1d(y_pred)
+    res = y_true - y_pred
+
+    if len(res) < window:
+        print(f"⚠ Skipped rolling metrics for {model_name}: len(test) < window({window})")
+        return
+
+    rmse_roll = np.sqrt(np.convolve(res**2, np.ones(window) / window, mode="valid"))
+    mae_roll = np.convolve(np.abs(res), np.ones(window) / window, mode="valid")
+    x = np.arange(window - 1, len(res))
+
+    plt.figure(figsize=(14, 4))
+    plt.plot(x, rmse_roll, label="Rolling RMSE", linewidth=1.6)
+    plt.plot(x, mae_roll, label="Rolling MAE", linewidth=1.6)
+    plt.xlabel('Sample Index', fontsize=11)
+    plt.ylabel('Error (USD)', fontsize=11)
+    plt.title(f'{model_name} - Rolling Metrics (window={window})', fontsize=13)
+    plt.legend(fontsize=10)
+    plt.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(f"{save_path}/{model_name}_rolling_metrics_w{window}.png", dpi=300)
+    plt.close()
+
+    print(f"✓ Saved: {save_path}/{model_name}_rolling_metrics_w{window}.png")
+
+
+def plot_residual_acf(y_true, y_pred, model_name, max_lag=60, save_path="plots"):
+    """
+    Residual autocorrelation (ACF) – quick check without statsmodels.
+    If residuals have strong ACF, model left temporal structure unexplained.
+    """
+    os.makedirs(save_path, exist_ok=True)
+
+    y_true = _to_1d(y_true)
+    y_pred = _to_1d(y_pred)
+    res = y_true - y_pred
+    res = res - np.mean(res)
+
+    if np.std(res) < 1e-12:
+        print(f"⚠ Skipped ACF for {model_name}: residual variance too small")
+        return
+
+    n = len(res)
+    max_lag = int(min(max_lag, n - 1))
+    acf = []
+    denom = np.sum(res**2)
+    for lag in range(max_lag + 1):
+        num = np.sum(res[:n - lag] * res[lag:])
+        acf.append(num / denom)
+
+    plt.figure(figsize=(12, 4))
+    plt.stem(range(max_lag + 1), acf, basefmt=" ")
+    plt.xlabel("Lag", fontsize=11)
+    plt.ylabel("ACF", fontsize=11)
+    plt.title(f"{model_name} - Residual ACF (max_lag={max_lag})", fontsize=13)
+    plt.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.savefig(f"{save_path}/{model_name}_residual_acf.png", dpi=300)
+    plt.close()
+
+    print(f"✓ Saved: {save_path}/{model_name}_residual_acf.png")
 
 
 def plot_all_models_comparison(results_df, save_path="plots"):
@@ -135,15 +247,16 @@ def plot_all_models_comparison(results_df, save_path="plots"):
         ax = axes[idx // 2, idx % 2]
 
         values = results_df[metric]
-        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
 
+        # renkleri sabitlemek istemiyorsan bunu kaldırabilirsin
+        colors = ['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728']
         bars = ax.bar(models, values, color=colors[:len(models)], alpha=0.8, edgecolor='black')
 
         # Highlight best model
         if metric == 'R2':
-            best_idx = values.idxmax()
+            best_idx = int(values.idxmax())
         else:
-            best_idx = values.idxmin()
+            best_idx = int(values.idxmin())
         bars[best_idx].set_color('gold')
         bars[best_idx].set_edgecolor('darkgoldenrod')
         bars[best_idx].set_linewidth(3)
@@ -152,12 +265,11 @@ def plot_all_models_comparison(results_df, save_path="plots"):
         ax.set_title(title, fontsize=13)
         ax.grid(True, axis='y', alpha=0.3)
 
-        # Add value labels on bars
         for bar in bars:
             height = bar.get_height()
             ax.text(bar.get_x() + bar.get_width()/2., height,
-                   f'{height:.2f}' if metric != 'RMSE' else f'${height:,.0f}',
-                   ha='center', va='bottom', fontsize=10)
+                    f'{height:.2f}' if metric != 'RMSE' else f'${height:,.0f}',
+                    ha='center', va='bottom', fontsize=10)
 
     plt.tight_layout()
     plt.savefig(f"{save_path}/all_models_comparison.png", dpi=300)
@@ -166,7 +278,7 @@ def plot_all_models_comparison(results_df, save_path="plots"):
     print(f"✓ Saved: {save_path}/all_models_comparison.png")
 
 
-def create_all_plots(results_dict, save_path="plots"):
+def create_all_plots(results_dict, save_path="plots", rolling_window=30, acf_max_lag=60):
     """
     Create all plots for the report
 
@@ -191,13 +303,18 @@ def create_all_plots(results_dict, save_path="plots"):
     ):
         plot_training_curves(train_loss, val_loss, name, save_path)
 
-    # 2. Predictions for each model
+    # 2. Predictions + diagnostics for each model
     for name, (y_true, y_pred) in zip(
         results_dict['models'],
         results_dict['predictions']
     ):
         plot_predictions(y_true, y_pred, name, save_path)
         plot_error_distribution(y_true, y_pred, name, save_path)
+
+        # NEW: residual time + rolling metrics + ACF
+        plot_residuals_over_time(y_true, y_pred, name, save_path)
+        plot_rolling_metrics(y_true, y_pred, name, window=rolling_window, save_path=save_path)
+        plot_residual_acf(y_true, y_pred, name, max_lag=acf_max_lag, save_path=save_path)
 
     # 3. Overall comparison
     plot_all_models_comparison(results_dict['results_df'], save_path)

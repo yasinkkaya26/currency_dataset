@@ -9,7 +9,7 @@ from utils.train import train_model, evaluate, regression_metrics, retrain_on_tr
 from models.mlp import ImprovedMLP, ResidualMLP
 from models.lstm import ImprovedLSTM
 from models.transformer import TimeSeriesTransformer
-
+from utils.plots import create_all_plots
 
 CSV_PATH = "dc_extended.csv"
 WINDOW_SIZE = 90
@@ -252,3 +252,23 @@ elif best_rmse < 12000:
     print("\n✓ Good performance! RMSE < $12,000")
 else:
     print("\n→ Consider additional hyperparameter tuning")
+
+
+# ========================
+# Create Plots
+# ========================
+
+plot_models = ["ResidualMLP", "LSTM", "Transformer"]
+
+# Filter results in the same order
+filtered = [r for r in all_results if r["MODEL"] in plot_models]
+
+results_dict = {
+    "models": [r["MODEL"] for r in filtered],
+    "train_losses": [r["train_losses"] for r in filtered],
+    "val_losses": [r["val_losses"] for r in filtered],
+    "predictions": [r["predictions"] for r in filtered],
+    "results_df": results_df,
+}
+
+create_all_plots(results_dict, save_path="plots")
